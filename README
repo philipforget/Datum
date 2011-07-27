@@ -1,0 +1,12 @@
+datum
+
+Python script to organize an input folder of images into an output folder of
+images organized into /year/month/day subdirectories based on exif data. Also
+detects duplicates
+
+Requires:
+ - pyexiv2
+
+
+Usage:
+./datum.py /path/to/input /path/to/output | tee errors.txt
