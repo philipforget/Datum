@@ -51,7 +51,7 @@ class Datum():
                 return_dictionary[TAGS.get(tag, tag)] = value
             return return_dictionary
 
-        except IOError:
+        except Exception:
             return None
 
     def write_date_file(self, original_directory, original_filename, datetime_object ):
