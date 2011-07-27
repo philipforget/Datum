@@ -1,11 +1,14 @@
 #!/usr/bin/python
 
-import hashlib
-import shutil
-import os
 import errno
+import hashlib
+import os
+import shutil
 import sys
-import pyexiv2
+import datetime
+
+from PIL import Image
+from PIL.ExifTags import TAGS
 
 
 class Datum():
@@ -21,30 +24,35 @@ class Datum():
         for dirpath, dirnames, filenames in os.walk(self.input_dir):
             for filename in filenames:
                 filepath = os.path.join(dirpath, filename)
-                metadata = pyexiv2.ImageMetadata(filepath)
-
-                try:
-                    metadata.read()
-                # Any error reading the metadata means we should copy the directory structure as is
-                except Exception as metadata_exception:
-                    self.write_no_date_file(original_directory=dirpath, original_filename=filename, exception=metadata_exception)
-                    continue
-
-                try:
-                    exif_datetime =  metadata['Exif.Image.DateTime'].value
-                    if type(exif_datetime) == str:
-                        raise KeyError("Datetime came back as a string, invalid exif data")
-                except KeyError as key_error:
-                    self.write_no_date_file(original_directory=dirpath, original_filename=filename, exception=key_error)
-                    continue
-
-                try:
-                    self.write_date_file(original_directory=dirpath, original_filename=filename, datetime_object=exif_datetime)
-                except Exception as date_write_exception:
+                exif_data = self.get_image_exif_or_None(filepath)
+                if exif_data is not None and exif_data.get('DateTimeOriginal') is not None:
+                    exif_datetime = datetime.datetime.strptime(exif_data['DateTimeOriginal'], '%Y:%m:%d %H:%M:%S')
                     try:
-                        self.write_no_date_file(original_directory=dirpath, original_filename=filename, exception=date_write_exception)
-                    except Exception as final_excption:
-                        sys.stdout.write("FAILED TO WRITE FILE %s - %s"  % (os.path.join(dirpath, filename), final_excption.__str__()))
+                        self.write_date_file(original_directory=dirpath, original_filename=filename, datetime_object=exif_datetime)
+                    except Exception as date_write_exception:
+                        try:
+                            self.write_no_date_file(original_directory=dirpath, original_filename=filename, exception=date_write_exception)
+                        except Exception as final_excption:
+                            sys.stdout.write("FAILED TO WRITE FILE %s - %s"  % (os.path.join(dirpath, filename), final_excption.__str__()))
+
+                else:
+                    self.write_no_date_file(original_directory=dirpath, original_filename=filename)
+                    continue
+
+    def get_image_exif_or_None(self, filepath):
+        """Returns a dictionary of an images EXIF data
+
+        """
+        try:
+            return_dictionary = {}
+            image = Image.open(filepath)
+            info = image._getexif()
+            for tag, value in info.items():
+                return_dictionary[TAGS.get(tag, tag)] = value
+            return return_dictionary
+
+        except IOError:
+            return None
 
     def write_date_file(self, original_directory, original_filename, datetime_object ):
         date_path = os.path.join(self.output_dir, datetime_object.strftime('%Y/%m/%d'))

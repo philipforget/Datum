@@ -5,7 +5,7 @@ images organized into /year/month/day subdirectories based on exif data. Also
 detects duplicates
 
 Requires:
- - pyexiv2
+ - PIL
 
 
 Usage:
