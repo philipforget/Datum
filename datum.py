@@ -1,24 +1,33 @@
 #!/usr/bin/python
 
+import datetime
 import errno
 import hashlib
 import os
 import shutil
 import sys
-import datetime
 
 from PIL import Image
 from PIL.ExifTags import TAGS
 
 
 class Datum():
+    DUPLICATES_PREFIX = "datum_duplicates"
+
+    def __init__(self):
+        # Dictionary to hold all of the md5's we encounter
+        self.directory_md5_dictionary = {}
+        # md5 cache of all the files we calculate, since it may need to happen often
+        self.md5_cache = {}
+
     def sort_by_exif_date(self, input_dir, output_dir):
         """Given an input directory, organize all pictures inside into date seperated folders
 
         """
         self.input_dir = input_dir
         self.output_dir = output_dir
-        self.directory_md5_dictionary = {}
+
+        # The directory to place files without exif data
         self.no_date_folder = os.path.join(output_dir, 'no date information')
 
         for dirpath, dirnames, filenames in os.walk(self.input_dir):
@@ -26,116 +35,161 @@ class Datum():
                 filepath = os.path.join(dirpath, filename)
                 exif_data = self.get_image_exif_or_None(filepath)
                 if exif_data is not None and exif_data.get('DateTimeOriginal') is not None:
+                    # Create a datetime object from the exif data
                     exif_datetime = datetime.datetime.strptime(exif_data['DateTimeOriginal'], '%Y:%m:%d %H:%M:%S')
                     try:
                         self.write_date_file(original_directory=dirpath, original_filename=filename, datetime_object=exif_datetime)
                     except Exception as date_write_exception:
-                        try:
-                            self.write_no_date_file(original_directory=dirpath, original_filename=filename, exception=date_write_exception)
-                        except Exception as final_excption:
-                            sys.stdout.write("FAILED TO WRITE FILE %s - %s"  % (os.path.join(dirpath, filename), final_excption.__str__()))
+                        self.write_no_date_file(original_directory=dirpath, original_filename=filename, exception=date_write_exception)
 
                 else:
                     self.write_no_date_file(original_directory=dirpath, original_filename=filename)
-                    continue
 
     def get_image_exif_or_None(self, filepath):
-        """Returns a dictionary of an images EXIF data
+        """Returns a dictionary of an images EXIF data if it exists or None
 
         """
         try:
-            return_dictionary = {}
+            exif_dictionary = {}
             image = Image.open(filepath)
             info = image._getexif()
             for tag, value in info.items():
-                return_dictionary[TAGS.get(tag, tag)] = value
-            return return_dictionary
+                exif_dictionary[TAGS.get(tag, tag)] = value
+            return exif_dictionary
 
-        except Exception:
+        except Exception as exif_exception:
             return None
 
-    def write_date_file(self, original_directory, original_filename, datetime_object ):
-        date_path = os.path.join(self.output_dir, datetime_object.strftime('%Y/%m/%d'))
+    def write_date_file(self, original_directory, original_filename, datetime_object, path_format='%Y/%m/%d'):
+        """Copy an image to a folder based on it's exif date data.
+
+        The folder structure can be defined by passing in the path_format
+        argument.
+        """
+        date_path = os.path.join(self.output_dir, datetime_object.strftime(path_format))
         self._copy_file(original_directory, date_path, original_filename)
 
     def write_no_date_file(self, original_directory, original_filename, exception=None):
         if exception:
             sys.stdout.write("Copying %s to no-date folder - %s\n" % (os.path.join(original_directory, original_filename), exception.__str__()))
+
         # Get the path structure relative to the input directory to be able to mirror it
         relative_path_from_input = os.path.join(self.no_date_folder, os.path.relpath(original_directory, self.input_dir))
-        # Copy the file to it's proper folder
-        self._copy_file(original_directory, relative_path_from_input, original_filename)
 
-    def _copy_file(self, original_directory, target_directory, original_filename, target_filename=None, is_duplicate=False):
-        mkdir_p(target_directory)
+        try:
+            self._copy_file(original_directory, relative_path_from_input, original_filename)
+        except Exception as write_exception:
+            sys.stdout.write("FAILED TO WRITE FILE %s, exception was %s"  % (os.path.join(original_directory, original_filename), write_exception.__str__()))
+
+    def get_file_md5(self, filepath):
+        """Get a files md5 based on filepath and cache it
+
+        """
+        file_md5 = self.md5_cache.get(hash(filepath))
+        if not file_md5:
+            with open(filepath, 'rb') as file_to_md5:
+                file_md5 = hashlib.md5(file_to_md5.read()).hexdigest()
+                self.md5_cache[hash(filepath)] = file_md5
+
+        return file_md5
+
+
+    def _copy_file(self, original_directory, target_directory, original_filename, target_filename=None):
+        """Copy a file from a directory into a target directory being aware of duplicates
+
+        If the file already exists in the target directory, create a duplicates
+        directory named after the files md5 to house the duplicate and any
+        subsequent duplicates of the file.
+        """
+
         # If we dont provide a target filename, use the original filename
         target_filename = original_filename if target_filename is None else target_filename
+
         original_filepath = os.path.join(original_directory, original_filename)
         target_filepath = os.path.join(target_directory, target_filename)
 
         # Get or create the array of md5's that have been copied to this directory to sort duplicates
         directory_md5_array = self.directory_md5_dictionary.get(target_directory, [])
 
-        # Suss out any duplicates
-        with open(original_filepath, 'rb') as original_file:
-            original_md5 = hashlib.md5(original_file.read()).hexdigest()
+        original_md5 = self.get_file_md5(original_filepath)
 
-        # If we know this is a duplicate, put it in the target_directory as is but with a unique filename
-        if is_duplicate:
-            new_target_filename = target_filename
-            # If the file already exists in this directory, enumerate the filename
-            if os.path.isfile(os.path.join(target_directory, new_target_filename)):
-                file_number = 0
-                while os.path.isfile(os.path.join(target_directory, new_target_filename)):
-                    new_target_filename = '{filename}-{filenumber}.{ext}'.format(
-                        filename = '.'.join(target_filename.split('.')[0:-1]), 
-                        filenumber = file_number,
-                        ext = target_filename.split('.')[-1]
-                    )
-                    file_number += 1
+        # If we have a duplicate in a non-datum duplicates folder, copy this
+        # file to a datum duplicates folder instead
+        if original_md5 in directory_md5_array and not Datum.is_duplicates_directory(target_directory):
+            new_target_directory = os.path.join(target_directory, Datum.get_duplicate_directory_name(original_md5))
+            new_target_filename = Datum.get_enumerated_filename(new_target_directory, Datum.get_md5_filename(original_md5, target_filename))
+            return self._copy_file(original_directory, new_target_directory, original_filename, new_target_filename)
 
-            # The new target filepath based on the new target filename
-            target_filepath = os.path.join(target_directory, new_target_filename)
+        # At this point we aren't trying to suss out hash collisions, only filename collisions
+        if os.path.isfile(target_filepath):
+            new_target_filename = Datum.get_md5_filename(original_md5, target_filename)
+            return self._copy_file(original_directory, target_directory, original_filename, new_target_filename)
 
-        else:
-            # If we have a duplicate hash
-            if original_md5 in directory_md5_array:
-                new_target_directory = os.path.join(target_directory, 'duplicate - %s' % original_md5)
-                return self._copy_file(original_directory, new_target_directory, original_filename, is_duplicate=True)
-
-            # If the filename already exists
-            if os.path.isfile(target_filepath):
-                # Calculate the file that exists in the target file's place
-                with open(target_filepath, 'rb') as target_file:
-                    target_md5 = hashlib.md5(target_file.read()).hexdigest()
-
-                # If the target and the new target match, copy it to a duplicates directory
-                if original_md5 == target_md5:
-                    new_target_directory = os.path.join(target_directory, 'duplicate - %s' % original_md5)
-                    return self._copy_file(original_directory, new_target_directory, original_filename, is_duplicate=True)
-
-
-                # If this is just a file name collision, rename this file to be it's md5 and extension
-                else:
-                    new_target_filename = '{filename}.{ext}'.format(
-                        filename = target_md5,
-                        ext = original_filename.split('.')[-1]
-                    )
-                    return self._copy_file(original_directory, original_filepath, original_filename, new_target_filename)
-
+        # All sorts of shit can go wrong when it comes time for disk IO, so be safe out there!
         try:
+            # Be lazy about actually creating the output directory until we are
+            # ready to copy the file
+            mkdir_p(target_directory)
             shutil.copy(original_filepath, target_filepath)
-            directory_md5_array.append(original_md5)
-            self.directory_md5_dictionary[target_directory] = directory_md5_array
-
         except IOError as e:
-            sys.stdout.write("Unable to copy %s - %s\n" % (original_filepath, e))
+            sys.stdout.write("Unable to copy \n%s to\n %s - %s\n" % (original_filepath, target_filepath, e))
             return
 
+        directory_md5_array.append(original_md5)
+        self.directory_md5_dictionary[target_directory] = directory_md5_array
+
+    @classmethod
+    def get_md5_filename(cls, md5sum, target_filename):
+        """Return an md5 formatted filename
+
+        """
+        file_root, file_ext = os.path.splitext(target_filename)
+        return '{md5sum}{file_ext}'.format(
+            md5sum = md5sum,
+            file_ext = file_ext
+        )
+
+    @classmethod
+    def get_enumerated_filename(cls, target_directory, target_filename):
+        """Return an enumerated filename for a given directory and target filename
+
+        """
+        file_root, file_ext = os.path.splitext(target_filename)
+        new_target_filename = target_filename
+        # If the file already exists in this directory, enumerate the filename
+        if os.path.isfile(os.path.join(target_directory, new_target_filename)):
+            file_number = 0
+            while os.path.isfile(os.path.join(target_directory, new_target_filename)):
+                new_target_filename = '{file_root}-{file_number}{file_ext}'.format(
+                    # The filename minus the extension if it's not a dotfile and it has one
+                    file_root = file_root,
+                    file_number = file_number,
+                    file_ext = file_ext
+                )
+                file_number += 1
+
+        return new_target_filename
+
+    @classmethod
+    def get_duplicate_directory_name(cls, md5sum):
+        """Returns a properly formated name for the new directory based on md5 sum
+
+        """
+        return "%s %s" % (cls.DUPLICATES_PREFIX, md5sum)
+
+    @classmethod
+    def is_duplicates_directory(cls, directory_path):
+        """ Returns True if the directory path is a datum duplicates folder
+
+        """
+        return directory_path.find(cls.DUPLICATES_PREFIX) >= 0
 
 
 
 def mkdir_p(path):
+    """mkdir -p functionality
+
+    """
     try:
         os.makedirs(path)
     except OSError as exc: # Python >2.5
