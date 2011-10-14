@@ -6,6 +6,7 @@ import hashlib
 import os
 import shutil
 import sys
+sys.setrecursionlimit(2000)
 
 from PIL import Image
 from PIL.ExifTags import TAGS
@@ -33,14 +34,18 @@ class Datum():
         for dirpath, dirnames, filenames in os.walk(self.input_dir):
             for filename in filenames:
                 filepath = os.path.join(dirpath, filename)
+                if os.path.islink(filepath):
+                    sys.stdout.write("Skipping symlink %s\n" % filepath)
+                    continue
                 exif_data = self.get_image_exif_or_None(filepath)
+
                 if exif_data is not None and exif_data.get('DateTimeOriginal') is not None:
-                    # Create a datetime object from the exif data
                     exif_datetime = datetime.datetime.strptime(exif_data['DateTimeOriginal'], '%Y:%m:%d %H:%M:%S')
-                    try:
-                        self.write_date_file(original_directory=dirpath, original_filename=filename, datetime_object=exif_datetime)
-                    except Exception as date_write_exception:
-                        self.write_no_date_file(original_directory=dirpath, original_filename=filename, exception=date_write_exception)
+                    self.write_date_file(original_directory=dirpath, original_filename=filename, datetime_object=exif_datetime)
+
+                elif exif_data is not None and exif_data.get('DateTime') is not None:
+                    exif_datetime = datetime.datetime.strptime(exif_data['DateTime'], '%Y:%m:%d %H:%M:%S')
+                    self.write_date_file(original_directory=dirpath, original_filename=filename, datetime_object=exif_datetime)
 
                 else:
                     self.write_no_date_file(original_directory=dirpath, original_filename=filename)
@@ -79,7 +84,7 @@ class Datum():
         try:
             self._copy_file(original_directory, relative_path_from_input, original_filename)
         except Exception as write_exception:
-            sys.stdout.write("FAILED TO WRITE FILE %s, exception was %s"  % (os.path.join(original_directory, original_filename), write_exception.__str__()))
+            sys.stdout.write("Unable to write no_date_file %s, exception was %s\n"  % (os.path.join(original_directory, original_filename), write_exception.__str__()))
 
     def get_file_md5(self, filepath):
         """Get a files md5 based on filepath and cache it
@@ -115,15 +120,11 @@ class Datum():
 
         # If we have a duplicate in a non-datum duplicates folder, copy this
         # file to a datum duplicates folder instead
-        if original_md5 in directory_md5_array and not Datum.is_duplicates_directory(target_directory):
+        if (original_md5 in directory_md5_array and not Datum.is_duplicates_directory(target_directory)) or\
+           os.path.isfile(target_filepath):
             new_target_directory = os.path.join(target_directory, Datum.get_duplicate_directory_name(original_md5))
             new_target_filename = Datum.get_enumerated_filename(new_target_directory, Datum.get_md5_filename(original_md5, target_filename))
             return self._copy_file(original_directory, new_target_directory, original_filename, new_target_filename)
-
-        # At this point we aren't trying to suss out hash collisions, only filename collisions
-        if os.path.isfile(target_filepath):
-            new_target_filename = Datum.get_md5_filename(original_md5, target_filename)
-            return self._copy_file(original_directory, target_directory, original_filename, new_target_filename)
 
         # All sorts of shit can go wrong when it comes time for disk IO, so be safe out there!
         try:
