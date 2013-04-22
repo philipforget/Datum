@@ -5,8 +5,6 @@ import errno
 import hashlib
 import os
 import shutil
-import sys
-sys.setrecursionlimit(2000)
 
 from PIL import Image
 from PIL.ExifTags import TAGS
@@ -197,6 +195,7 @@ def mkdir_p(path):
         if exc.errno == errno.EEXIST:
             pass
         else: raise
+
 
 def exit_with_error(message):
     sys.stderr.write(message)
