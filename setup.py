@@ -20,7 +20,7 @@ requires = ['pil']
 
 setup(
     name='datum',
-    version='0.1dev'
+    version='0.1dev',
     description='Simply organize your images.',
     author='Philip Forget',
     author_email='philipforget@gmail.com',
